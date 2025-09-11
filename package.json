@@ -1,0 +1,36 @@
+{
+  "name": "yt-spotify-dl",
+  "version": "0.0.1",
+  "description": "CLI music downloader from youtube / spotify",
+  "keywords": [
+    "music-dl",
+    "youtube-dl",
+    "spotify-dl",
+    "yt-dl"
+  ],
+  "homepage": "https://github.com/Terror-Machine/yt-spotify-dl#readme",
+  "bugs": {
+    "url": "https://github.com/Terror-Machine/yt-spotify-dl/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Terror-Machine/yt-spotify-dl.git"
+  },
+  "license": "MIT",
+  "author": "Terror-Machine",
+  "type": "commonjs",
+  "main": "index.js",
+  "bin": {
+    "music-dl": "download.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "axios": "^1.11.0",
+    "cli-progress": "^3.12.0",
+    "commander": "^12.1.0",
+    "yt-search": "^2.10.4"
+  },
+  "devDependencies": {}
+}
