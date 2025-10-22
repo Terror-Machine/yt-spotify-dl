@@ -33,7 +33,7 @@ function sweepLeftovers(finalDir, finalBasenameNoExt, keepExts = []) {
   const extsToRemove = new Set([
     ".webm", ".m4a", ".mkv", ".mpd", ".m3u8", ".part",
     ".ytdl", ".ytdl.tmp", ".f234", ".f140", ".frag",
-    ".opus", ".temp"
+    ".opus", ".temp", ".ts", ".3gp"
   ]);
   for (const ext of keepExts) extsToRemove.delete(ext.toLowerCase());
   try {
@@ -66,7 +66,7 @@ function sweepGlobalLeftovers(baseDirs = [process.cwd()]) {
             }
           } else {
             const ext = path.extname(item).toLowerCase();
-            if ([".webm", ".mp4", ".mp3", ".m4a", ".mkv", ".mpd", ".m3u8", ".part", ".ytdl", ".ytdl.tmp", ".f234", ".f140", ".frag", ".opus", ".temp"].includes(ext)) {
+            if ([".webm", ".mp4", ".mp3", ".m4a", ".mkv", ".mpd", ".m3u8", ".part", ".ytdl", ".ytdl.tmp", ".f234", ".f140", ".frag", ".opus", ".temp", ".ts", ".3gp"].includes(ext)) {
               unlinkSafe(fullPath);
             }
           }
@@ -105,6 +105,8 @@ async function executeAudioDownload(ytDlpCommand, url, outputPath, quality, cook
       "-f", "bestaudio/best",
       "--no-cache-dir",
       "--rm-cache-dir",
+      "--extractor-args", "youtube:player_client=android,web",
+      "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "-o", tempPattern,
       "--paths", `ALL:${tempDir}`,
       url
@@ -113,24 +115,36 @@ async function executeAudioDownload(ytDlpCommand, url, outputPath, quality, cook
     await run(ytDlpCommand, ytArgs, {
       onProgress: (p) => onProgress?.(Math.max(0, Math.min(50, p / 2)))
     });
-    const tempFiles = fs.readdirSync(tempDir)
-      .filter(f => /\.(webm|m4a|mp3|opus|aac|wav|flac)$/i.test(f))
+    const allFiles = fs.readdirSync(tempDir);
+    const tempFiles = allFiles
+      .filter(f => {
+        const ext = path.extname(f).toLowerCase();
+        return /\.(webm|m4a|mp3|opus|aac|wav|flac|mp4|mkv|ts|3gp|ogg)$/i.test(ext);
+      })
       .map(f => ({ f, size: fs.statSync(path.join(tempDir, f)).size }))
       .sort((a, b) => b.size - a.size);
-    if (tempFiles.length === 0) throw new Error("File audio sementara tidak ditemukan.");
+    if (tempFiles.length === 0) {
+      console.error(`[Error] No suitable files found. Available files: ${allFiles.join(', ')}`);
+      throw new Error("File audio sementara tidak ditemukan.");
+    }
     const inputRaw = path.join(tempDir, tempFiles[0].f);
     const qualityArg = isNaN(parseInt(quality, 10)) ? "0" : String(quality);
     const ffArgs = ["-y", "-i", inputRaw, "-vn", "-acodec", "libmp3lame", "-q:a", qualityArg, finalOutAbs];
     await new Promise((resolve, reject) => {
       const ff = spawn("ffmpeg", ffArgs);
-      ff.stderr.on("data", () => onProgress?.(Math.min(99, 100)));
+      let ffmpegError = '';
+      ff.stderr.on("data", (data) => {
+        ffmpegError += data.toString();
+        onProgress?.(Math.min(99, 100));
+      });
       ff.on("error", reject);
       ff.on("close", (code) => {
         if (code === 0) {
           onProgress?.(100);
           resolve();
         } else {
-          reject(new Error(`ffmpeg gagal`));
+          console.error(`[FFmpeg Error] ${ffmpegError}`);
+          reject(new Error(`ffmpeg gagal dengan kode ${code}`));
         }
       });
     });
@@ -282,29 +296,33 @@ class YoutubeDownloader {
     this.rateLimitDelay = 500;
   }
   async getVideoMetadata(url, cookiesPath = null) {
-    return new Promise((resolve, reject) => {
-      const args = ['--print-json', '--no-warnings', url];
-      if (cookiesPath) { args.unshift(cookiesPath); args.unshift('--cookies'); }
-      const process = spawn(this.ytDlpCommand, args);
-      let metadataJson = '';
-      let errorOutput = '';
-      process.stdout.on('data', (chunk) => metadataJson += chunk);
-      process.stderr.on('data', (chunk) => errorOutput += chunk);
-      process.on('close', (code) => {
-        if (code === 0 && metadataJson) {
-          try {
-            const metadata = JSON.parse(metadataJson);
-            let artist = metadata.artist || metadata.uploader || "Unknown Artist";
-            let title = metadata.title || "Unknown Title";
-            artist = artist.replace(/ - Topic$/, '').replace(/ Official$/, '').replace(/VEVO$/, '').trim();
-            const artistRegex = new RegExp(`^${artist}\\s*-\\s*`, 'i');
-            title = title.replace(artistRegex, '').replace(/\(Official (Video|Music Video|Audio)\)/gi, '').replace(/\[Official (Video|Audio)\]/gi, '').replace(/\((Audio|Lyrics|Visualizer)\)/gi, '').trim();
-            resolve({ filename: sanitizeFilename(`${artist} - ${title}`) });
-          } catch (e) { reject(e); }
-        } else { reject(new Error(`Gagal mendapatkan metadata: ${errorOutput}`)); }
-      });
-      process.on('error', reject);
-    });
+    try {
+      const videoIdMatch = url.match(/(?:v=|\/)([\w-]{11})/);
+      if (!videoIdMatch) return { filename: sanitizeFilename(`YouTube_Video_${Date.now()}`) };
+      const videoId = videoIdMatch[1];
+      const searchResult = await yts({ videoId });
+      if (searchResult && searchResult.title) {
+        let title = searchResult.title;
+        let artist = searchResult.author?.name || "Unknown Artist";
+        artist = artist
+          .replace(/ - Topic$/, '')
+          .replace(/ Official$/, '')
+          .replace(/VEVO$/, '')
+          .trim();
+        const artistRegex = new RegExp(`^${artist}\\s*-\\s*`, 'i');
+        title = title
+          .replace(artistRegex, '')
+          .replace(/\(Official (Video|Music Video|Audio)\)/gi, '')
+          .replace(/\[Official (Video|Audio)\]/gi, '')
+          .replace(/\((Audio|Lyrics|Visualizer)\)/gi, '')
+          .trim();
+        return { filename: sanitizeFilename(`${artist} - ${title}`) };
+      }
+      return { filename: sanitizeFilename(`YouTube_Video_${Date.now()}`) };
+    } catch (error) {
+      console.warn(`[Metadata] Fallback to generic name: ${error.message}`);
+      return { filename: sanitizeFilename(`YouTube_Video_${Date.now()}`) };
+    }
   }
   async download(url, filename, customDir, cookiesPath, quality, options = {}) {
     const finalDir = customDir || this.defaultDir;
@@ -413,10 +431,16 @@ class YoutubeDownloader {
       } else {
         formatString = `bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best`;
       }
-      const ytDlpArgs = ['-f', formatString, '--merge-output-format', 'mp4', '-o', outputPath, url];
+      const ytDlpArgs = [
+        '-f', formatString,
+        '--merge-output-format', 'mp4',
+        '--extractor-args', 'youtube:player_client=android,web',
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        '-o', outputPath,
+        url
+      ];
       if (cookiesPath) {
-        ytDlpArgs.unshift(cookiesPath);
-        ytDlpArgs.unshift('--cookies');
+        ytDlpArgs.unshift('--cookies', cookiesPath);
       }
       return new Promise((resolve, reject) => {
         const process = spawn(this.ytDlpCommand, ytDlpArgs);
